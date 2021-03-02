@@ -251,8 +251,9 @@ export class MPL
             let mpl_msgs = {min_seq: key.get_MinSequence(), msg_total: buffered_seq_nos.length, msgs: buffered_seq_nos}
             this.control_data.set(key, mpl_msgs);
         }
-        const packet = new pkt.Packet(this.node, constants.BROADCAST_ID , this.control_data, true);
+        const packet = new pkt.Packet(this.node, constants.BROADCAST_ID , this.control_data.size + this.Buffered_Set.length, true);
         packet.packet_protocol = constants.PROTO_ICMP6;
+        packet.payload = this.control_data;
         packet.msg_type = MPL_IPV6_OPTION;
         packet.mpltype = 1;
         packet.seedlist = seeds;
@@ -281,7 +282,11 @@ export class MPL
 
                 }
             } else if (packet.msg_type === MPL_IPV6_OPTION && packet.mpltype === 1) {
-
+                for (let key of this.Seed_Set) {
+                    if (!this.Seed_Set.has(key)){
+                        this.rst_control_trickle();
+                    }
+                }
             }
             return false;
         }
