@@ -35,20 +35,19 @@ export function initialize(network)
 
         PROACTIVE_FORWARDING: true,
         /*30 minute lifetime for any seed set entrys*/
-        SEED_SET_ENTRY_LIFETIME: 30,
+        SEED_SET_ENTRY_LIFETIME: 30 * 60,
         /* Minimum i value for trickle timer data messages*/
-        DATA_MESSAGE_IMIN: 10,
+        DATA_MESSAGE_IMIN: 10 * linklayerlatency,
         /* */
         DATA_MESSAGE_K: 1,
         DATA_MESSAGE_TIMER_EXPIRATIONS: 3,
-        CONTROL_MESSAGE_IMIN: 10,
-        CONTROL_MESSAGE_IMAX: 5,
+        CONTROL_MESSAGE_IMIN: 10 * worstlinklayerlatency,
+        CONTROL_MESSAGE_IMAX: 5 * 60,
         CONTROL_MESSAGE_K: 1,
-        CONTROL_MESSAGE_TIMER_EXPIRATIONS: 10,
-        IS_SEED : false
+        CONTROL_MESSAGE_TIMER_EXPIRATIONS: 10
     };
 
-    default_config.DATA_MESSAGE_IMAX = default_config.DATA_MESSAGE_IMIN * 2;
+    default_config.DATA_MESSAGE_IMAX = default_config.DATA_MESSAGE_IMIN;
 
     for (const key in default_config) {
         /* set the ones that have not been set from the config file */
@@ -78,12 +77,17 @@ export class MPL
         /*needs seed id, Minsequence as a lower bound, lifetime which has the remaining life of an entry*/
         this.Buffered_Set = [];
         /*buffered set stores recent data packets*/
+        //if node type sender make seed
         /*has the seed id, sequence no and the data message*/
-        if (this.node.IS_SEED){
+        /*
+        if (this.IS_SEED){
             this.seedid = ~~ (rng.random()) * 256;
         }
+        */
+
         this.ctrltimer = null;
         this.ctrl_expires = 0;
+
     }
 
 
@@ -109,13 +113,13 @@ export class MPL
 
     increment_seed_lifetimes(){
         for (let key of this.Seed_Set){
-            this.Seed_Set.find(key).increment_lifetime();
+            key.increment_lifetime();
         }
     }
 
     expire_seed_set(){
         for (let key of this.Seed_Set) {
-            if (this.Seed_Set.find(key).get_lifetime() >= this.node.config.SEED_SET_ENTRY_LIFETIME) {
+            if (key.get_lifetime() >= this.node.config.SEED_SET_ENTRY_LIFETIME) {
                 this.remove_seed(key);
             }
         }
@@ -162,9 +166,9 @@ export class MPL
 
     sweep_buffer_set(){
         for (let entry of this.Buffered_Set) {
-            if (this.Buffered_Set[entry].get_SequenceNumber() <= this.Seed_Set.find(this.Buffered_Set[entry].SeedID()).get_MinSequence()) {
+            if (entry.get_SequenceNumber() <= this.Seed_Set.find(entry.SeedID()).get_MinSequence()) {
                 //Buffer set deleted rather than spliced to preserve indices for timers
-                this.Buffered_Set[entry] = undefined;
+                entry = undefined;
             }
         }
     }
@@ -195,7 +199,7 @@ export class MPL
     rst_control_trickle() {
         this.ctrl_expires = 0;
         time.remove_timer(this.ctrltimer);
-        start_new_control_timer();
+        this.start_new_control_timer();
     }
 
     control_trickle_expire(){
@@ -204,6 +208,7 @@ export class MPL
         if (!(this.ctrl_expires >= this.node.config.CONTROL_MESSAGE_TIMER_EXPIRATIONS)){
             this.control_message_send();
         }
+        this.control_message_send();
     }
 
     add_set_timers(packet){
@@ -230,7 +235,28 @@ export class MPL
     }
 
     control_message_send(){
-
+        let seeds = this.Seed_Set;
+        this.control_data = new Map();
+        for (let key of this.Seed_Set) {
+            let buffered_seq_nos = [];
+            let maxseqno = this.is_highest_sequence_no(key);
+            for (let j = key.get_MinSequence(); j <= maxseqno; j++){
+                buffered_seq_nos.push(false);
+            }
+            for (let i = 0; i < this.Buffered_Set.length; i++) {
+                if (this.Buffered_Set[i].SeedID === key){
+                    buffered_seq_nos[this.Buffered_Set[i].get_SequenceNumber() - key.get_MinSequence] = true;
+                }
+            }
+            let mpl_msgs = {min_seq: key.get_MinSequence(), msg_total: buffered_seq_nos.length, msgs: buffered_seq_nos}
+            this.control_data.set(key, mpl_msgs);
+        }
+        const packet = new pkt.Packet(this.node, constants.BROADCAST_ID , this.control_data, true);
+        packet.packet_protocol = constants.PROTO_ICMP6;
+        packet.msg_type = MPL_IPV6_OPTION;
+        packet.mpltype = 1;
+        packet.seedlist = seeds;
+        this.node.add_packet(packet);
     }
 
     packet_rx(packet) {
@@ -265,7 +291,7 @@ export class MPL
         /* nothing */
     }
 
-    on_prepare_tx_packet(packet) {
+    on_prepare_tx_packet(packet){
         packet.m = 0;
         if (this.is_highest_sequence_no(packet.seedid)){
             packet.m = 1;
@@ -274,7 +300,7 @@ export class MPL
     }
 
     on_forward(packet, newpacket) {
-
+        return false;
     }
 
     on_new_time_source(old_time_source, new_time_source) {
