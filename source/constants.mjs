@@ -74,6 +74,7 @@ const constants = {
     /* Implementation specific (must be >= 256) */
     PROTO_APP:   256,
     PROTO_TSCH:  257,
+    PROTO_MPL:   258,
 
     /* From 802.15.4 standard */
     FRAME802154_BEACONFRAME: 0,
