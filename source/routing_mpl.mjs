@@ -17,7 +17,7 @@ import * as utils from "./utils.mjs";
 import * as networknode from "./node.mjs";
 import * as MPL_Seed_Set from "./MPL_Seed_Set";
 import * as MPL_Buffer_set from "./MPL_Buffer_Set";
-
+import * as MPL_Seed_Info from "./MPL_Seed_Info.mjs";
 
 /******constants******/
 
@@ -100,7 +100,6 @@ export class MPL
 
     add_seed_set_entry(SeedID, MinSequence) {
         utils.assert(!this.Seed_Set.has(SeedID), `Entry with Seed ID ${SeedID} already present`);
-        const index = this.Seed_Set.size;
         let new_seed_entry = new MPL_Seed_Set.MPL_Seed_Set_Entry(SeedID, MinSequence, 0);
         this.Seed_Set.set(SeedID, new_seed_entry);
     }
@@ -187,6 +186,9 @@ export class MPL
                 mpl.data_timer_expire(buffer_entry_index);
             });
         }
+        else {
+            this.Buffered_Set.timer = null;
+        }
         this.data_message_send(this.Buffered_Set[buffer_entry_index]);
     }
 
@@ -248,15 +250,14 @@ export class MPL
                     buffered_seq_nos[this.Buffered_Set[i].get_SequenceNumber() - key.get_MinSequence] = true;
                 }
             }
-            let mpl_msgs = {min_seq: key.get_MinSequence(), msg_total: buffered_seq_nos.length, msgs: buffered_seq_nos}
-            this.control_data.set(key, mpl_msgs);
+            let new_seed_info_entry = new MPL_Seed_Info.MPL_Seed_Info_Entry(key, key.get_MinSequence, buffered_seq_nos.length, buffered_seq_nos);
+            this.control_data.set(key, new_seed_info_entry);
         }
         const packet = new pkt.Packet(this.node, constants.BROADCAST_ID , this.control_data.size + this.Buffered_Set.length, true);
         packet.packet_protocol = constants.PROTO_ICMP6;
         packet.payload = this.control_data;
         packet.msg_type = MPL_IPV6_OPTION;
         packet.mpltype = 1;
-        packet.seedlist = seeds;
         this.node.add_packet(packet);
     }
 
@@ -282,13 +283,40 @@ export class MPL
 
                 }
             } else if (packet.msg_type === MPL_IPV6_OPTION && packet.mpltype === 1) {
-                for (let key of this.Seed_Set) {
-                    if (!this.Seed_Set.has(key)){
+                for (let key of packet.payload) {
+
+                    let seed_info = packet.payload.get(key);
+                    //Checks for unreceived data messages and if found resets control timer
+                    if (!this.Seed_Set.has(key) || seed_info.Sequence_nos[(seed_info.Sequence_no_length - 1)] > this.is_highest_sequence_no()) {
                         this.rst_control_trickle();
+                    }
+
+                    if (this.is_highest_sequence_no() > ((seed_info.Sequence_no_length - 1) + key.get_MinSequence())){
+                        for (let i = 0; i < this.Buffered_Set.length; i++){
+                            if (seed_info.SeedID === this.Buffered_Set[i] && this.Buffered_Set[i].SequenceNumber > ((seed_info.Sequence_no_length - 1) + key.get_MinSequence())){
+                                this.Buffered_Set[i].trickle_E = 0;
+                                if (this.Buffered_Set[i].timer === null){
+                                    this.start_new_data_timer(i);
+                                    this.rst_control_trickle();
+                                }
+                            }
+                        }
+                    }
+
+                }
+
+
+
+                for (let key of this.Seed_Set){
+                    if (!packet.payload.has(key)){
+                        this.rst_control_trickle();
+                        for (let i = 0; i < this.Buffered_Set.length; i++) {
+                            this.Buffered_Set[i].trickle_E = 0;
+                        }
+
                     }
                 }
             }
-            return false;
         }
     }
 
