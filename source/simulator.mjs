@@ -46,6 +46,7 @@ import * as log from './log.mjs';
 import * as time from './time.mjs';
 import * as route from './route.mjs';
 import * as rpl from './routing_rpl.mjs';
+import * as mpl from './routing_mpl.mjs';
 import * as nullrouting from './routing_null.mjs';
 import * as lfrouting from './routing_lf.mjs';
 import * as neighbor from './neighbor.mjs';
@@ -194,7 +195,9 @@ export function construct_simulation(is_from_web)
     } else if (config.ROUTING_ALGORITHM === "NullRouting") {
         routing = nullrouting;
     }
-
+    else if (config.ROUTING_ALGORITHM === "MPL") {
+        routing = mpl;
+    }
     /* init routing protocol */
     routing.initialize(net);
 
