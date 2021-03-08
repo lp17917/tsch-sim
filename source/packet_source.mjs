@@ -68,7 +68,10 @@ export class PacketSource {
         let do_generate;
         if (config.APP_PACKETS_GENERATE_ALWAYS) {
             do_generate = true;
-        } else {
+        } else if(this.source.config.ROUTING_ALGORITHM === "MPL"){
+            do_generate = this.source.config.IS_SEED;
+        }
+        else {
             /* schedule a packet only if we have connected to the network (RPL & TSCH) */
             do_generate = this.source.routing.is_joined();
         }

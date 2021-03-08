@@ -37,14 +37,15 @@ export function initialize(network)
         /*30 minute lifetime for any seed set entrys*/
         SEED_SET_ENTRY_LIFETIME: 30 * 60,
         /* Minimum i value for trickle timer data messages*/
-        DATA_MESSAGE_IMIN: 10 * linklayerlatency,
+        DATA_MESSAGE_IMIN: 10 * 10,
         /* */
         DATA_MESSAGE_K: 1,
         DATA_MESSAGE_TIMER_EXPIRATIONS: 3,
-        CONTROL_MESSAGE_IMIN: 10 * worstlinklayerlatency,
+        CONTROL_MESSAGE_IMIN: 10 * 10,
         CONTROL_MESSAGE_IMAX: 5 * 60,
         CONTROL_MESSAGE_K: 1,
-        CONTROL_MESSAGE_TIMER_EXPIRATIONS: 10
+        CONTROL_MESSAGE_TIMER_EXPIRATIONS: 10,
+        IS_SEED: false
     };
 
     default_config.DATA_MESSAGE_IMAX = default_config.DATA_MESSAGE_IMIN;
@@ -56,7 +57,7 @@ export function initialize(network)
         }
     }
     network.set_protocol_handler(constants.PROTO_ICMP6, MPL_IPV6_OPTION,
-        function(node, p) { node.routing.packet_rx(p); });
+        function(node, p) { node.routing.control_rx(p); });
 }
 
 /*---------------------------------------------------------------------------*/
@@ -79,11 +80,11 @@ export class MPL
         /*buffered set stores recent data packets*/
         //if node type sender make seed
         /*has the seed id, sequence no and the data message*/
-        /*
-        if (this.IS_SEED){
-            this.seedid = ~~ (rng.random()) * 256;
+
+        if (this.node.config.IS_SEED){
+            this.seedid = ~~ (rng.random()) * 65536;
         }
-        */
+
 
         this.ctrltimer = null;
         this.ctrl_expires = 0;
@@ -94,6 +95,7 @@ export class MPL
 
 
     start() {
+        this.node.has_joined = true;
         /* generate latency for the surrounding nodes */
         /*Add in generation of MPL packets for seeds*/
     }
@@ -232,7 +234,6 @@ export class MPL
     }
 
     data_message_send(packet) {
-        packet.mpltype = 0;
         this.node.add_packet(packet);
     }
 
@@ -261,62 +262,80 @@ export class MPL
         this.node.add_packet(packet);
     }
 
-    packet_rx(packet) {
-        //check it is an mpl packet and if it is a data or control
-        if (packet.msg_type === MPL_IPV6_OPTION && packet.mpltype === 0) {
 
-            if (!this.Buffered_Set.get(packet.seedid, packet.seqnum, packet.length)) {
+    mpl_seed_gen_packet(packet){
+        packet.seedid = this.seedid;
+        packet.M = 1;
+        packet.msg_type = MPL_IPV6_OPTION;
+        this.check_and_add_data(packet);
+    }
 
-                //If the packet is in the seed set and more than the min sequence no
-                if (((this.Seed_Set.has(packet.seedid)) && (packet.seqnum > this.get_seed_set_entry(packet.seedid).get_MinSequence()))) {
-                    //reset lifetime for this seeds entry
-                    this.get_seed_set_entry(packet.seedid).rst_lifetime();
-                    //add to buffer set-------------------------------------------------
-                    this.add_set_timers(packet);
+    check_and_add_data(packet) {
 
-                    //If the packet does not have a respective seed set entry for the id
-                } else if (!(this.Seed_Set.has(packet.seedid)) ) {
-                    //generate seed set and add to buffer set
-                    this.add_seed_set_entry(packet.seedid, packet.seqnum)
-                    this.add_set_timers(packet);
+        if (!this.Buffered_Set.get(packet.seedid, packet.seqnum, packet.length)) {
+
+            //If the packet is in the seed set and more than the min sequence no
+            if (((this.Seed_Set.has(packet.seedid)) && (packet.seqnum > this.get_seed_set_entry(packet.seedid).get_MinSequence()))) {
+                //reset lifetime for this seeds entry
+                this.get_seed_set_entry(packet.seedid).rst_lifetime();
+                //add to buffer set-------------------------------------------------
+                this.add_set_timers(packet);
+                return true;
+                //If the packet does not have a respective seed set entry for the id
+            } else if (!(this.Seed_Set.has(packet.seedid))) {
+                //generate seed set and add to buffer set
+                this.add_seed_set_entry(packet.seedid, packet.seqnum)
+                this.add_set_timers(packet);
+                return true;
+            }
+        }
+        return false;
+    }
 
 
-                }
-            } else if (packet.msg_type === MPL_IPV6_OPTION && packet.mpltype === 1) {
-                for (let key of packet.payload) {
+    control_rx(packet){
+        for (let key of packet.payload) {
+            let seed_info = packet.payload.get(key);
+            //Checks for unreceived data messages and if found resets control timer
+            if (!this.Seed_Set.has(key) || seed_info.Sequence_nos[(seed_info.Sequence_no_length - 1)] > this.is_highest_sequence_no()) {
+                this.rst_control_trickle();
+            }
 
-                    let seed_info = packet.payload.get(key);
-                    //Checks for unreceived data messages and if found resets control timer
-                    if (!this.Seed_Set.has(key) || seed_info.Sequence_nos[(seed_info.Sequence_no_length - 1)] > this.is_highest_sequence_no()) {
-                        this.rst_control_trickle();
-                    }
-
-                    if (this.is_highest_sequence_no() > ((seed_info.Sequence_no_length - 1) + key.get_MinSequence())){
-                        for (let i = 0; i < this.Buffered_Set.length; i++){
-                            if (seed_info.SeedID === this.Buffered_Set[i] && this.Buffered_Set[i].SequenceNumber > ((seed_info.Sequence_no_length - 1) + key.get_MinSequence())){
-                                this.Buffered_Set[i].trickle_E = 0;
-                                if (this.Buffered_Set[i].timer === null){
-                                    this.start_new_data_timer(i);
-                                    this.rst_control_trickle();
-                                }
-                            }
+            if (this.is_highest_sequence_no() > ((seed_info.Sequence_no_length - 1) + key.get_MinSequence())){
+                for (let i = 0; i < this.Buffered_Set.length; i++){
+                    if (seed_info.SeedID === this.Buffered_Set[i] && this.Buffered_Set[i].SequenceNumber > ((seed_info.Sequence_no_length - 1) + key.get_MinSequence())){
+                        this.Buffered_Set[i].trickle_E = 0;
+                        if (this.Buffered_Set[i].timer === null){
+                            this.start_new_data_timer(i);
+                            this.rst_control_trickle();
                         }
-                    }
-
-                }
-
-
-
-                for (let key of this.Seed_Set){
-                    if (!packet.payload.has(key)){
-                        this.rst_control_trickle();
-                        for (let i = 0; i < this.Buffered_Set.length; i++) {
-                            this.Buffered_Set[i].trickle_E = 0;
-                        }
-
                     }
                 }
             }
+
+        }
+
+
+
+        for (let key of this.Seed_Set){
+            if (!packet.payload.has(key)){
+                this.rst_control_trickle();
+                for (let i = 0; i < this.Buffered_Set.length; i++) {
+                    this.Buffered_Set[i].trickle_E = 0;
+                }
+
+            }
+        }
+    }
+
+
+    packet_rx(packet, new_packet){
+        //check it is an mpl packet
+        new_packet.seedid = packet.seedid;
+        new_packet.M = packet.M;
+        new_packet.msg_type = packet.msg_type;
+        if (packet.msg_type === MPL_IPV6_OPTION) {
+            return this.check_and_add_data(new_packet);
         }
     }
 
@@ -325,11 +344,12 @@ export class MPL
     }
 
     on_prepare_tx_packet(packet){
-        packet.m = 0;
+
+        packet.M = 0;
         if (this.is_highest_sequence_no(packet.seedid)){
-            packet.m = 1;
+            packet.M = 1;
         }
-        /* nothing */
+
     }
 
     on_forward(packet, newpacket) {
@@ -347,7 +367,21 @@ export class MPL
     }
 
     local_repair() {
-        /* nothing */
+
+        this.AddressSet = id_to_addr(this.node.id);
+        /*All of the addresses within the MPL domain*/
+        this.MPLInterfaceSet = null;
+        /*seed set - sliding window used for getting the sequence numbers*/
+        this.Seed_Set = new Map();
+        /*needs seed id, Minsequence as a lower bound, lifetime which has the remaining life of an entry*/
+        this.Buffered_Set = [];
+        /*buffered set stores recent data packets*/
+        //if node type sender make seed
+        /*has the seed id, sequence no and the data message*/
+
+        this.ctrltimer = null;
+        this.ctrl_expires = 0;
+
     }
 
     is_joined() {

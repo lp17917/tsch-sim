@@ -49,6 +49,7 @@ import * as route from './route.mjs';
 import * as rpl from './routing_rpl.mjs';
 import * as nullrouting from './routing_null.mjs';
 import * as lfrouting from './routing_lf.mjs';
+import * as mpl from './routing_mpl.mjs';
 import * as sf from './slotframe.mjs';
 import * as simulator from './simulator.mjs';
 import * as energy_model from './energy_model.mjs';
@@ -149,6 +150,8 @@ export class Node {
             this.routing = new lfrouting.LeafAndForwarderRouting(this);
         } else if (this.config.ROUTING_ALGORITHM === "NullRouting") {
             this.routing = new nullrouting.NullRouting(this);
+        } else if (this.config.ROUTING_ALGORITHM === "MPL") {
+            this.routing = new mpl.MPL(this);
         } else {
             this.log(log.ERROR, `failed to find routing algorithm "${this.config.ROUTING_ALGORITHM}", using NullRouting`);
             this.routing = new nullrouting.NullRouting(this);
@@ -665,7 +668,12 @@ export class Node {
     add_app_packet(packet) {
         packet.packet_protocol = constants.PROTO_APP;
         this.stats_app_num_tx += 1;
-        return this.add_packet(packet);
+        if (this.config.ROUTING_ALGORITHM === "MPL"){
+            this.routing.mpl_seed_gen_packet(packet);
+        }else {
+            //Add specific mpl handler
+            return this.add_packet(packet);
+        }
     }
 
     /* Add a network-layer packet to the node */
@@ -913,10 +921,12 @@ export class Node {
             if (packet.is_query) {
                 this.reply_packet(packet);
             }
-        } else {
+        }
+        else {
             /* try to route it further */
             this.forward_packet(packet);
         }
+
     }
 
     /* Receive EB packet */
@@ -1082,7 +1092,11 @@ export class Node {
         new_packet.copy(packet);
         new_packet.lasthop_id = this.id;
         new_packet.lasthop_addr = this.addr;
-        new_packet.nexthop_id = this.routes.get_nexthop(packet.destination_id);
+        if (this.config.ROUTING_ALGORITHM === "MPL"){
+            new_packet.nexthop_id = constants.BROADCAST_ID;
+        } else {
+            new_packet.nexthop_id = this.routes.get_nexthop(packet.destination_id);
+        }
         if (new_packet.nexthop_id <= 0) {
             new_packet.nexthop_addr = null;
         } else {
@@ -1090,7 +1104,13 @@ export class Node {
         }
         /* remove the headers */
         new_packet.length = packet.length - this.config.MAC_HEADER_SIZE;
+        if (this.config.ROUTING_ALGORITHM === "MPL"){
+            let added = this.routing.packet_rx(packet, new_packet);
+            if (!added){
+                log.log(log.INFO, this, "App", `app packet seqnum=${packet.seqnum} for=${packet.destination_id} rejected: Lower than min_seq or already exists in set`);
+            }
 
+        }
         if (!this.routing.on_forward(packet, new_packet)) {
             if (packet.packet_protocol === constants.PROTO_APP) {
                 log.log(log.INFO, this, "App", `dropping app packet seqnum=${packet.seqnum} for=${packet.destination_id}: routing loop detected`);
@@ -1620,7 +1640,7 @@ export class Node {
     }
 
     /* Packet sent callback */
-    packet_sent(packet, neighbor, status_ok, cell) {
+    packet_sent(packet, neighbor, status_ok, cell){
         if (neighbor) {
             neighbor.on_tx(packet.num_transmissions, status_ok, packet.is_ack_required, cell);
             this.routing.on_tx(neighbor, packet, status_ok, packet.is_ack_required, cell);
