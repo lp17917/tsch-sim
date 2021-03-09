@@ -1109,6 +1109,7 @@ export class Node {
             if (!added){
                 log.log(log.INFO, this, "App", `app packet seqnum=${packet.seqnum} for=${packet.destination_id} rejected: Lower than min_seq or already exists in set`);
             }
+            return;
 
         }
         if (!this.routing.on_forward(packet, new_packet)) {

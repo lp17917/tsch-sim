@@ -69,6 +69,7 @@ export class PacketSource {
         if (config.APP_PACKETS_GENERATE_ALWAYS) {
             do_generate = true;
         } else if(this.source.config.ROUTING_ALGORITHM === "MPL"){
+            log.log(log.INFO, this.source, "App", `checking if node is seed, for=${this.destination_id}`);
             do_generate = this.source.config.IS_SEED;
         }
         else {
